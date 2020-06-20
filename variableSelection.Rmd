@@ -1,0 +1,169 @@
+---
+title: "Variable Selection for Modeling Atmospheric Data"
+author: "Marc Petta"
+date: ""
+output:
+  html_document:
+    df_print: paged
+---
+Variable selection to determine the most parsimonious subset of variables for data on atmospheric conditions. Regsubsets is implemented with cross validation on mean square error.
+
+```{r, message=FALSE, warning=FALSE}
+# set up
+library(dplyr)
+library(naniar)
+library(car)
+library(leaps)
+
+# read in dataset
+air=read.csv("data/2015_Air_quality_in_northern_Taiwan.csv", header = T, sep = ",")
+#Subset to location of interest
+air <- air[ which(air$station=='Zhongshan'), ]
+# function to cast all variables as numeric
+air <- mutate_all(air, function(x) as.numeric(as.character(x)))
+# plot to examine missing values
+vis_miss(air, sort_miss=T, warn_large_data=F)
+
+```
+
+```{r}
+# remove variables with excessivec missing values
+air= air[,-c(1,2,11,14,15,19)]
+# clean up some of the remaining NAs
+air = air[complete.cases(air), ]
+# review data
+summary(air)
+
+```
+
+Sulfur dioxide has been the parameter identified as being associated with poor air quality. In order to predict conditions for poor air quality modeling will be performed using regression. Threshold for air quality referenced here: https://www.airnow.gov/index.cfm?action=airnow.main 
+
+##### Assess colinearity by variance inflation factor
+```{r}
+# fit full model
+fit = lm(air$SO2 ~., data = air)
+# check variance inflation factor
+vif(fit)
+
+```
+
+
+```{r}
+# remove variables with high VIF values
+air = air[,-c(4,5,6,7)]
+# fit again full model
+fit = lm(air$SO2 ~., data = air)
+summary(fit)
+
+```
+
+## Variable selection
+Using regsubsets we can asssess whether we can find a reduction in variables used. Plots follow to assist in determining the mot parsimonious model. Bayesian information criterion will be a primary focus.
+```{r}
+# stepwise selection
+models = regsubsets(SO2~., data = air, nvmax = 12)
+reg.summary = summary(models)
+
+```
+
+
+### Visualizations
+##### R Squared and Residual Sum of Squares
+```{r}
+# plot values for R Squared and Residual Sum of Squares
+plot(reg.summary$rsq,xlab = "Number of Variables", ylab = "RSquare", type = "l")
+plot(reg.summary$rss,xlab = "Number of Variables", ylab = "RSS", type = "l")
+
+```
+
+##### Adjusted R squared 
+```{r}
+# plot adjusted R squared showing position with maximum value
+which.max(reg.summary$adjr2)
+plot(reg.summary$adjr2,xlab = "Number of Variables",ylab = "Adjusted Rsqrd", type = "l")
+points(12,reg.summary$adjr2[12],col = "red", cex = 2, pch = 20)
+
+```
+
+##### Bayesian information criterion
+```{r}
+# plot Bayesian information criterion showing position with minimum value
+which.min(reg.summary$bic)
+plot(reg.summary$bic,xlab = "Number of Variables", ylab = "BIC", type = "l")
+points(9,reg.summary$bic[9], col = "red", cex = 2, pch = 20)
+
+```
+
+
+#### Most parsimonious model
+```{r}
+# plot Selected Variables 
+# plot(models, scale = "r2" )
+# plot(models, scale = "adjr2")
+plot(models, scale = "bic")
+# view coeffecients with the selection of 6
+coef(models, 6)
+
+```
+
+### Cross Validation
+Using regsubsets cross validation will be performed. Iterations for the 10 fold cross validation will be compared for mean square error.
+```{r, results='hide', message=FALSE}
+# create a function for making predictions with regsubsets 
+predict.regsubsets <- function(object, newdata, id, ...){ 
+  form = as.formula(object$call[[2]])
+  mat = model.matrix(form, newdata)
+  coefi = coef(object, id=id)
+  xvars = names(coefi)
+  mat[ , xvars] %*% coefi
+} 
+
+# set Up 10 Fold Cross Validation
+n = 7691
+k = 10 
+# create list of group labels
+groups = c(rep(1:k,floor(n/k)), 1:(n-floor(n/k)*k)) 
+set.seed(1)
+cvgroups = sample(groups, n)
+group.error = matrix( , nr=15, nc=k)
+
+# loop thru all the models calculating cv score for each
+for(i in 1:k) {
+  groupi = (cvgroups == i)
+  cv.fit = regsubsets(SO2~., data = air[!groupi,], nvmax = 15)
+  
+  for(j in 1:12){
+    y.pred = predict(cv.fit, newdata = air[groupi,], id = j)
+    group.error[j,i] = mean((air$SO2[groupi]-y.pred)^2)
+  } 
+  
+} 
+
+
+```
+
+
+```{r, results='hide', message=FALSE}
+# review mean square error of each model with the same amount of variables 
+MSE = apply(group.error, 1, mean)
+plot(MSE)
+#which.min(MSE)
+
+```
+
+```{r, results='hide', message=FALSE}
+# review standard error of cross validation
+se = apply(group.error, 1, sd)/sqrt(k)
+se[10]
+
+# find which models have a MSE less than model 10 plus its standard error
+which(MSE <= MSE[10]+se[10])
+
+```
+
+```{r}
+# review coefficients of most parsimonious model 
+coef(models, 6)
+
+```
+
